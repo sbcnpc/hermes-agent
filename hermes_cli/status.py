@@ -374,8 +374,23 @@ def show_status(args):
                 is_active = result.stdout.strip() == "active"
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 is_active = False
-            print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-            print("  Manager:      systemd (user)")
+            if is_active:
+                print(f"  Status:       {check_mark(True)} running")
+                print("  Manager:      systemd (user)")
+            else:
+                # Fallback to system-level systemd
+                try:
+                    result = subprocess.run(
+                        ["systemctl", "is-active", _gw_svc],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    is_active = result.stdout.strip() == "active"
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    is_active = False
+                print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
+                print(f"  Manager:      systemd ({'system' if is_active else 'user'})")
         
     elif sys.platform == 'darwin':
         from hermes_cli.gateway import get_launchd_label
