@@ -98,6 +98,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     cache_document_from_bytes,
@@ -188,7 +189,8 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
 }
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
-_FEISHU_ACK_EMOJI = "OK"
+_FEISHU_ACK_EMOJI = "Typing"
+_FEISHU_DONE_EMOJI = "DONE"
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1089,6 +1091,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        self._pending_ack_reactions: Dict[str, str] = {}  # message_id → reaction_id (for Typing→DONE swap)
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1836,11 +1839,12 @@ class FeishuAdapter(BasePlatformAdapter):
             emoji_type,
         )
         # Only process reactions from real users. Ignore app/bot-generated reactions
-        # and Hermes' own ACK emoji to avoid feedback loops.
+        # and Hermes' own ACK/DONE emojis to avoid feedback loops.
         loop = self._loop
         if (
             operator_type in {"bot", "app"}
             or emoji_type == _FEISHU_ACK_EMOJI
+            or emoji_type == _FEISHU_DONE_EMOJI
             or not message_id
             or loop is None
             or bool(getattr(loop, "is_closed", lambda: False)())
@@ -2076,7 +2080,9 @@ class FeishuAdapter(BasePlatformAdapter):
         async with chat_lock:
             message_id = event.message_id
             if message_id:
-                await self._add_ack_reaction(message_id)
+                reaction_id = await self._add_ack_reaction(message_id)
+                if reaction_id:
+                    self._pending_ack_reactions[message_id] = reaction_id
             await self.handle_message(event)
 
     async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
@@ -2112,6 +2118,73 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to add ack reaction to %s", message_id, exc_info=True)
         return None
+
+    async def _swap_ack_to_done(self, message_id: str, reaction_id: str) -> None:
+        """Delete the Typing ACK reaction and add a DONE reaction."""
+        if not self._client or not message_id or not reaction_id:
+            return
+        try:
+            from lark_oapi.api.im.v1 import (
+                DeleteMessageReactionRequest,
+                DeleteMessageReactionRequestBody,
+                CreateMessageReactionRequest,
+                CreateMessageReactionRequestBody,
+            )
+            # Delete the Typing reaction
+            del_request = (
+                DeleteMessageReactionRequest.builder()
+                .message_id(message_id)
+                .reaction_id(reaction_id)
+                .build()
+            )
+            await asyncio.to_thread(self._client.im.v1.message_reaction.delete, del_request)
+        except Exception:
+            logger.warning("[Feishu] Failed to delete Typing reaction %s on %s", reaction_id, message_id, exc_info=True)
+        try:
+            from lark_oapi.api.im.v1 import (
+                CreateMessageReactionRequest,
+                CreateMessageReactionRequestBody,
+            )
+            body = (
+                CreateMessageReactionRequestBody.builder()
+                .reaction_type({"emoji_type": _FEISHU_DONE_EMOJI})
+                .build()
+            )
+            request = (
+                CreateMessageReactionRequest.builder()
+                .message_id(message_id)
+                .request_body(body)
+                .build()
+            )
+            await asyncio.to_thread(self._client.im.v1.message_reaction.create, request)
+        except Exception:
+            logger.warning("[Feishu] Failed to add DONE reaction on %s", message_id, exc_info=True)
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Swap the Typing ACK reaction to DONE when processing finishes."""
+        message_id = getattr(event, "message_id", None)
+        if not message_id:
+            return
+        reaction_id = self._pending_ack_reactions.pop(message_id, None)
+        if not reaction_id:
+            return
+        if outcome == ProcessingOutcome.CANCELLED:
+            # Interrupted — just remove Typing, don't add DONE
+            try:
+                from lark_oapi.api.im.v1 import (
+                    DeleteMessageReactionRequest,
+                )
+                del_request = (
+                    DeleteMessageReactionRequest.builder()
+                    .message_id(message_id)
+                    .reaction_id(reaction_id)
+                    .build()
+                )
+                await asyncio.to_thread(self._client.im.v1.message_reaction.delete, del_request)
+            except Exception:
+                logger.debug("[Feishu] Failed to remove Typing on cancel for %s", message_id, exc_info=True)
+            return
+        await self._swap_ack_to_done(message_id, reaction_id)
 
     # =========================================================================
     # Webhook server and security
