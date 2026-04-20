@@ -370,8 +370,38 @@ def show_status(args):
             print(f"  Status:       {color('unknown', Colors.DIM)}")
             print("  Manager:      launchd")
         else:
-            print(f"  Status:       {color('N/A', Colors.DIM)}")
-            print("  Manager:      (not supported on this platform)")
+            try:
+                from hermes_cli.gateway import get_service_name
+                _gw_svc = get_service_name()
+            except Exception:
+                _gw_svc = "hermes-gateway"
+            try:
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-active", _gw_svc],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                is_active = result.stdout.strip() == "active"
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                is_active = False
+            if is_active:
+                print(f"  Status:       {check_mark(True)} running")
+                print("  Manager:      systemd (user)")
+            else:
+                # Fallback to system-level systemd
+                try:
+                    result = subprocess.run(
+                        ["systemctl", "is-active", _gw_svc],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    is_active = result.stdout.strip() == "active"
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    is_active = False
+                print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
+                print(f"  Manager:      systemd ({'system' if is_active else 'user'})")
     
     # =========================================================================
     # Cron Jobs

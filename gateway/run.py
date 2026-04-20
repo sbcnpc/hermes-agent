@@ -1569,8 +1569,7 @@ class GatewayRunner:
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         message = (
-            f"⚡ Interrupting current task{status_detail}. "
-            f"I'll respond to your message shortly."
+            f"⚡正在中断当前任务{status_detail}，马上回复你。"
         )
 
         thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
@@ -1637,14 +1636,13 @@ class GatewayRunner:
         if not active:
             return
 
-        action = "restarting" if self._restart_requested else "shutting down"
+        action = "重启中" if self._restart_requested else "正在关闭"
         hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            "当前任务将被中断，重启后发送任意消息可继续。"
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else "当前任务将被中断。"
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        msg = f"⚠️网关{action} — {hint}"
 
         notified: set = set()
         for session_key in active:
@@ -10075,7 +10073,7 @@ class GatewayRunner:
                 try:
                     await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        f"⏳还在处理中…（已用 {_elapsed_mins} 分钟{_status_detail}）",
                         metadata=_status_thread_metadata,
                     )
                 except Exception as _ne:

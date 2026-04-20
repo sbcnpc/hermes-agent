@@ -2339,7 +2339,6 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             from lark_oapi.api.im.v1 import (
                 DeleteMessageReactionRequest,
-                DeleteMessageReactionRequestBody,
                 CreateMessageReactionRequest,
                 CreateMessageReactionRequestBody,
             )
